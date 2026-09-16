@@ -1,0 +1,16 @@
+# Build artifacts
+/bin/
+coverage.out
+*.test
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+
+# Environment & secrets (never commit these)
+.env
+.env.local

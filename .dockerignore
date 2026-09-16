@@ -1,0 +1,16 @@
+# Build context: only send what the binary build needs.
+.git
+.gitignore
+.idea
+.vscode
+bin
+coverage.out
+*.md
+!README.md
+docker-compose.yml
+requests.http
+scripts
+
+# Local build output is not needed inside the image.
+wallet-api
+cmd/api/api

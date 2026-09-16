@@ -1,0 +1,253 @@
+###############################################################################
+# Wallet & Ledger Service - koleksi request manual
+#
+# How to use:
+#   - VS Code  : extension "REST Client" (klik "Send Request")
+#   - JetBrains: the .http file format is supported natively
+#   - curl     : every block below can also be run with curl (see the comments)
+#
+# The execution order follows the E2E scenario: run from top to bottom and
+# replace @walletA / @walletB with the ids returned when the wallets were created.
+###############################################################################
+
+@baseUrl = http://localhost:8080
+@ownerA = 11111111-1111-4111-8111-111111111111
+@ownerB = 22222222-2222-4222-8222-222222222222
+
+# Fill in after running request "1a. Create wallet A".
+@walletA = replace-with-wallet-A-id
+# Fill in after running request "1b. Create wallet B".
+@walletB = replace-with-wallet-B-id
+
+# Idempotency-Key: change the value for a new request; send the same value again
+# to simulate a client retry.
+@idemTopUp = topup-demo-0001
+@idemTransfer = transfer-demo-0001
+@idemWithdraw = withdraw-demo-0001
+
+###############################################################################
+# 0. Health & readiness
+###############################################################################
+
+### 0a. Liveness (does not touch the database)
+GET {{baseUrl}}/healthz
+
+### 0b. Readiness (checks the database connection)
+GET {{baseUrl}}/readyz
+
+### 0c. Metrics (format Prometheus)
+GET {{baseUrl}}/metrics
+
+###############################################################################
+# 1. Create wallets (POST /v1/wallets) -> 201
+###############################################################################
+
+### 1a. Create wallet A
+# curl -X POST http://localhost:8080/v1/wallets \
+#   -H 'Content-Type: application/json' \
+#   -H 'Idempotency-Key: create-wallet-a-0001' \
+#   -d '{"owner_id":"11111111-1111-4111-8111-111111111111","currency":"IDR"}'
+POST {{baseUrl}}/v1/wallets
+Content-Type: application/json
+Idempotency-Key: create-wallet-a-0001
+
+{
+  "owner_id": "{{ownerA}}",
+  "currency": "IDR"
+}
+
+### 1b. Create wallet B
+POST {{baseUrl}}/v1/wallets
+Content-Type: application/json
+Idempotency-Key: create-wallet-b-0001
+
+{
+  "owner_id": "{{ownerB}}",
+  "currency": "IDR"
+}
+
+### 1c. Double-submit wallet creation (same Idempotency-Key) -> same wallet, no duplicate
+POST {{baseUrl}}/v1/wallets
+Content-Type: application/json
+Idempotency-Key: create-wallet-a-0001
+
+{
+  "owner_id": "{{ownerA}}",
+  "currency": "IDR"
+}
+
+### 1d. Validation failure: owner_id is not a UUID -> 422 validation_error
+POST {{baseUrl}}/v1/wallets
+Content-Type: application/json
+
+{
+  "owner_id": "not-a-uuid",
+  "currency": "IDR"
+}
+
+### 1e. Malformed body: unknown field -> 400 bad_request
+POST {{baseUrl}}/v1/wallets
+Content-Type: application/json
+
+{
+  "owner_id": "{{ownerA}}",
+  "currency": "IDR",
+  "saldo_awal": 1000000
+}
+
+###############################################################################
+# 2. Detail wallet (GET /v1/wallets/{id}) -> 200
+###############################################################################
+
+### 2a. Read wallet A details
+GET {{baseUrl}}/v1/wallets/{{walletA}}
+
+### 2b. Wallet does not exist -> 404 not_found (RFC 7807)
+GET {{baseUrl}}/v1/wallets/99999999-9999-4999-8999-999999999999
+
+###############################################################################
+# 3. Top-up (POST /v1/wallets/{id}/topup) -> 200
+#    every money movement writes one double-entry journal:
+#    DEBIT world account, CREDIT wallet user
+###############################################################################
+
+### 3a. Top-up wallet A sebesar 100000 satuan minor (Rp 1.000,00)
+# curl -X POST http://localhost:8080/v1/wallets/$WALLET_A/topup \
+#   -H 'Content-Type: application/json' \
+#   -H 'Idempotency-Key: topup-demo-0001' \
+#   -d '{"amount_minor":100000,"reference":"transfer-bank-bca-001"}'
+POST {{baseUrl}}/v1/wallets/{{walletA}}/topup
+Content-Type: application/json
+Idempotency-Key: {{idemTopUp}}
+
+{
+  "amount_minor": 100000,
+  "reference": "transfer-bank-bca-001"
+}
+
+### 3b. RETRY the same request (same Idempotency-Key) -> the response is replayed,
+###     the transaction_id is identical and the balance does NOT grow
+POST {{baseUrl}}/v1/wallets/{{walletA}}/topup
+Content-Type: application/json
+Idempotency-Key: {{idemTopUp}}
+
+{
+  "amount_minor": 100000,
+  "reference": "transfer-bank-bca-001"
+}
+
+### 3c. Same Idempotency-Key but a different payload -> 409 idempotency_conflict
+POST {{baseUrl}}/v1/wallets/{{walletA}}/topup
+Content-Type: application/json
+Idempotency-Key: {{idemTopUp}}
+
+{
+  "amount_minor": 5000,
+  "reference": "transfer-bank-bca-001"
+}
+
+### 3d. No Idempotency-Key header -> 400 bad_request
+POST {{baseUrl}}/v1/wallets/{{walletA}}/topup
+Content-Type: application/json
+
+{
+  "amount_minor": 1000
+}
+
+### 3e. Unreasonable amount -> 422 validation_error
+POST {{baseUrl}}/v1/wallets/{{walletA}}/topup
+Content-Type: application/json
+Idempotency-Key: topup-demo-negative
+
+{
+  "amount_minor": -5000
+}
+
+###############################################################################
+# 4. Transfer antar wallet (POST /v1/wallets/{id}/transfer) -> 200
+#    DEBIT source wallet, CREDIT destination wallet; both wallets are locked in one
+#    transaction so the same balance cannot be spent twice.
+###############################################################################
+
+### 4a. Transfer 40000 from A to B
+POST {{baseUrl}}/v1/wallets/{{walletA}}/transfer
+Content-Type: application/json
+Idempotency-Key: {{idemTransfer}}
+
+{
+  "to_wallet_id": "{{walletB}}",
+  "amount_minor": 40000,
+  "reference": "invoice-2026-0042"
+}
+
+### 4b. Transfer to the same wallet -> 422 self_transfer
+POST {{baseUrl}}/v1/wallets/{{walletA}}/transfer
+Content-Type: application/json
+Idempotency-Key: transfer-demo-self
+
+{
+  "to_wallet_id": "{{walletA}}",
+  "amount_minor": 1000
+}
+
+### 4c. After the transfer: balance A decreased, balance B increased
+GET {{baseUrl}}/v1/wallets/{{walletA}}
+
+###
+GET {{baseUrl}}/v1/wallets/{{walletB}}
+
+###############################################################################
+# 5. Withdraw (POST /v1/wallets/{id}/withdraw) -> 200, or 409 when funds are insufficient
+###############################################################################
+
+### 5a. Withdraw above the balance -> 409 insufficient_funds (balance unchanged)
+POST {{baseUrl}}/v1/wallets/{{walletB}}/withdraw
+Content-Type: application/json
+Idempotency-Key: withdraw-demo-fail
+
+{
+  "amount_minor": 999999999,
+  "reference": "withdraw-everything"
+}
+
+### 5b. Withdraw within the balance -> 200, balance decreases
+POST {{baseUrl}}/v1/wallets/{{walletB}}/withdraw
+Content-Type: application/json
+Idempotency-Key: {{idemWithdraw}}
+
+{
+  "amount_minor": 10000,
+  "reference": "partial-withdrawal"
+}
+
+### 5c. Proof that the balance did not change after the failed withdraw
+GET {{baseUrl}}/v1/wallets/{{walletB}}
+
+###############################################################################
+# 6. Transaction history (GET /v1/wallets/{id}/transactions) - cursor pagination
+###############################################################################
+
+### 6a. First page (default limit 20)
+GET {{baseUrl}}/v1/wallets/{{walletA}}/transactions
+
+### 6b. First page with a small limit; take "next_cursor" from the response
+GET {{baseUrl}}/v1/wallets/{{walletA}}/transactions?limit=2
+
+### 6c. Next page (replace the cursor value with next_cursor from 6b)
+GET {{baseUrl}}/v1/wallets/{{walletA}}/transactions?limit=2&cursor=ZToxMg
+
+### 6d. Invalid cursor -> 400 bad_request
+GET {{baseUrl}}/v1/wallets/{{walletA}}/transactions?cursor=not-a-cursor
+
+### 6e. Limit out of range -> 422 validation_error
+GET {{baseUrl}}/v1/wallets/{{walletA}}/transactions?limit=1000
+
+###############################################################################
+# 7. Error transport
+###############################################################################
+
+### 7a. Unknown endpoint -> 404 not_found (problem details)
+GET {{baseUrl}}/v1/does-not-exist
+
+### 7b. Wrong method -> 405 + Allow header
+GET {{baseUrl}}/v1/wallets
