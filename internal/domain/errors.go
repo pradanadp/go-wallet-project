@@ -112,7 +112,7 @@ func (e *ForbiddenError) Error() string { return e.Reason }
 
 func (e *ForbiddenError) Unwrap() error { return ErrForbidden }
 
-// IdempotencyConflictError: same key but a different request payload.
+// IdempotencyConflictError same key but a different request payload.
 type IdempotencyConflictError struct{ Key string }
 
 func (e *IdempotencyConflictError) Error() string {
@@ -121,7 +121,7 @@ func (e *IdempotencyConflictError) Error() string {
 
 func (e *IdempotencyConflictError) Unwrap() error { return ErrIdempotencyConflict }
 
-// IdempotencyInFlightError: a twin request is still being processed.
+// IdempotencyInFlightError a twin request is still being processed.
 type IdempotencyInFlightError struct{ Key string }
 
 func (e *IdempotencyInFlightError) Error() string {
